@@ -58,6 +58,7 @@ class MySQLConnection {
   bool _inTransaction = false;
   final bool _secure;
   Uint8List? _pendingPacketBytes;
+  int _pendingPacketByteCount = 0;
   Object? _lastError;
   int _serverCapabilities = 0;
   String? _activeAuthPluginName;
@@ -504,35 +505,64 @@ class MySQLConnection {
   }
 
   Iterable<Uint8List> _splitPackets(Uint8List data) sync* {
-    var buffer = data;
-    final pending = _pendingPacketBytes;
-
-    if (pending != null && pending.isNotEmpty) {
-      final merged = Uint8List(pending.length + data.length);
-      merged.setRange(0, pending.length, pending);
-      merged.setRange(pending.length, merged.length, data);
-      buffer = merged;
-      _pendingPacketBytes = null;
-    }
-
     var offset = 0;
-
-    while (buffer.length - offset >= 4) {
-      final packetLength = MySQLPacket.getPacketLength(buffer, offset);
-
-      if (buffer.length - offset < packetLength) {
-        break;
+    while (offset < data.length) {
+      final pending = _pendingPacketBytes;
+      if (pending == null) {
+        final available = data.length - offset;
+        if (available < 4) {
+          final header = Uint8List(4);
+          header.setRange(0, available, data, offset);
+          _pendingPacketBytes = header;
+          _pendingPacketByteCount = available;
+          return;
+        }
+        final packetLength = MySQLPacket.getPacketLength(data, offset);
+        if (available >= packetLength) {
+          yield Uint8List.sublistView(data, offset, offset + packetLength);
+          offset += packetLength;
+          continue;
+        }
+        // The header gives the final allocation size. Copy each incoming
+        // fragment once instead of copying the growing prefix twice per read.
+        final packet = Uint8List(packetLength);
+        packet.setRange(0, available, data, offset);
+        _pendingPacketBytes = packet;
+        _pendingPacketByteCount = available;
+        return;
       }
 
-      yield Uint8List.sublistView(buffer, offset, offset + packetLength);
-      offset += packetLength;
-    }
-
-    if (offset < buffer.length) {
-      final remaining = buffer.length - offset;
-      final pendingCopy = Uint8List(remaining);
-      pendingCopy.setRange(0, remaining, buffer, offset);
-      _pendingPacketBytes = pendingCopy;
+      var packet = pending;
+      if (_pendingPacketByteCount < 4) {
+        final needed = 4 - _pendingPacketByteCount;
+        final available = data.length - offset;
+        final count = available < needed ? available : needed;
+        packet.setRange(_pendingPacketByteCount,
+            _pendingPacketByteCount + count, data, offset);
+        _pendingPacketByteCount += count;
+        offset += count;
+        if (_pendingPacketByteCount < 4) return;
+        final packetLength = MySQLPacket.getPacketLength(packet);
+        if (packetLength > 4) {
+          final complete = Uint8List(packetLength);
+          complete.setRange(0, 4, packet);
+          packet = complete;
+          _pendingPacketBytes = packet;
+        }
+      }
+      final needed = packet.length - _pendingPacketByteCount;
+      final available = data.length - offset;
+      final count = available < needed ? available : needed;
+      packet.setRange(_pendingPacketByteCount,
+          _pendingPacketByteCount + count, data, offset);
+      _pendingPacketByteCount += count;
+      offset += count;
+      if (_pendingPacketByteCount != packet.length) return;
+      // A completed packet has independent storage. Clear before yielding;
+      // later socket reads must never modify bytes held by an async decoder.
+      _pendingPacketBytes = null;
+      _pendingPacketByteCount = 0;
+      yield packet;
     }
   }
 
