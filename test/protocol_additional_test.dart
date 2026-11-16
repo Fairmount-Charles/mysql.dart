@@ -345,6 +345,78 @@ void main() {
       expect(row.values[2], isNull);
     });
 
+    test('binary temporal rows preserve fractional precision and ordering', () {
+      MySQLColumnDefinitionPacket column(int type) =>
+          MySQLColumnDefinitionPacket(
+            catalog: 'def',
+            schema: 'db',
+            table: 't',
+            orgTable: 't',
+            name: 'observed_at',
+            orgName: 'observed_at',
+            charset: 63,
+            columnLength: 26,
+            type: MySQLColumnType.create(type),
+            flags: 0,
+            decimals: 6,
+          );
+      const fractions = [
+        0,
+        1,
+        9,
+        10,
+        999,
+        1000,
+        12345,
+        65835,
+        99999,
+        100000,
+        658350,
+        999999
+      ];
+      for (final type in [mysqlColumnTypeDateTime, mysqlColumnTypeTimestamp]) {
+        DateTime? previous;
+        for (final micros in fractions) {
+          final writer = ByteDataWriter(endian: Endian.little)
+            ..writeUint8(0)
+            ..writeUint8(0) // row header and NULL bitmap
+            ..writeUint8(11)
+            ..writeUint16(2026, Endian.little)
+            ..writeUint8(11)
+            ..writeUint8(16)
+            ..writeUint8(17)
+            ..writeUint8(11)
+            ..writeUint8(16)
+            ..writeUint32(micros, Endian.little);
+          final row = MySQLBinaryResultSetRowPacket.decode(
+              writer.toBytes(), [column(type)]);
+          final date = MySQLColumnType.create(type)
+              .convertStringValueToProvidedType<DateTime>(
+                  row.values.single as String)!;
+          expect(date.millisecond * 1000 + date.microsecond, micros);
+          if (previous != null) expect(date.isAfter(previous), isTrue);
+          previous = date;
+        }
+      }
+      for (final type in [mysqlColumnTypeTime, mysqlColumnTypeTime2]) {
+        for (final negative in [false, true]) {
+          final writer = ByteDataWriter(endian: Endian.little)
+            ..writeUint8(0)
+            ..writeUint8(0)
+            ..writeUint8(12)
+            ..writeUint8(negative ? 1 : 0)
+            ..writeUint32(2, Endian.little)
+            ..writeUint8(3)
+            ..writeUint8(4)
+            ..writeUint8(5)
+            ..writeUint32(1, Endian.little);
+          final row = MySQLBinaryResultSetRowPacket.decode(
+              writer.toBytes(), [column(type)]);
+          expect(row.values.single, '${negative ? '-' : ''}51:04:05.000001');
+        }
+      }
+    });
+
     test('binary result row rejects non-zero header', () {
       final col = MySQLColumnDefinitionPacket(
         catalog: 'def',

@@ -377,7 +377,7 @@ Tuple2<dynamic, int> parseBinaryColumnData(
           ..write(second.toString().padLeft(2, '0'));
 
         if (numOfBytes >= 11) {
-          result.write('.$microSecond');
+          result.write('.${microSecond.toString().padLeft(6, '0')}');
         }
 
         final consumed = startOffset - initialOffset;
@@ -427,7 +427,7 @@ Tuple2<dynamic, int> parseBinaryColumnData(
         timeResult.write(seconds.toString().padLeft(2, '0'));
 
         if (numOfBytes >= 12) {
-          timeResult.write('.${microSecond.toString()}');
+          timeResult.write('.${microSecond.toString().padLeft(6, '0')}');
         }
 
         final consumed = startOffset - initialOffset;
